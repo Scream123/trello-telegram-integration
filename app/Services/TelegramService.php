@@ -7,6 +7,7 @@ namespace App\Services;
 use Telegram\Bot\Api;
 use Telegram\Bot\Exceptions\TelegramSDKException;
 use Illuminate\Support\Facades\Log;
+use Telegram\Bot\Objects\ChatMember;
 
 class TelegramService
 {
@@ -17,12 +18,12 @@ class TelegramService
         $this->telegram = $telegram;
     }
 
-    public function setWebhook(string $url)
+    public function setWebhook(string $url): array
     {
         try {
             $response = $this->telegram->setWebhook(['url' => $url]);
 
-            if ($response->isOk()) {
+            if ($response === true) {
                 return ['message' => 'Webhook set successfully.'];
             } else {
                 return ['message' => 'Failed to set webhook.'];
@@ -33,7 +34,7 @@ class TelegramService
         }
     }
 
-    public function sendMessage(string $chatId,string $message, string $parseMode = 'HTML')
+    public function sendMessage($chatId, string $message, string $parseMode = 'HTML'): array
     {
         try {
             $response = $this->telegram->sendMessage([
@@ -53,7 +54,7 @@ class TelegramService
         }
     }
 
-    public function getChatMember(string $chatId, string $userId)
+    public function getChatMember($chatId, $userId): ChatMember
     {
         try {
             return $this->telegram->getChatMember([
