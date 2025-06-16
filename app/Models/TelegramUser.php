@@ -6,19 +6,8 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
-/**
- * @property int $id
- * @property string $user_id
- * @property string|null $full_name
- * @property string|null $username
- * @property string|null $avatar_url
- * @property string|null $trello_token
- * @property \Carbon\Carbon $created_at
- * @property \Carbon\Carbon $updated_at
- * @property-read \Illuminate\Database\Eloquent\Collection|\App\Models\TelegramUser[] $telegramUsers
- */
 class TelegramUser extends Model
 {
     use HasFactory;
@@ -30,15 +19,10 @@ class TelegramUser extends Model
         'first_name',
         'last_name',
         'username',
-        'trello_id',
     ];
 
-    protected $casts = [
-        'user_id' => 'integer',
-    ];
-
-    public function trelloUser(): BelongsTo
+    public function trelloUser(): HasOne
     {
-        return $this->belongsTo(TrelloUser::class, 'trello_id', 'user_id');
+        return $this->hasOne(TrelloUser::class, 'telegram_user_id', 'id');
     }
 }
