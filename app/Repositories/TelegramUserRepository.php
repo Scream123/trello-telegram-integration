@@ -13,11 +13,8 @@ class TelegramUserRepository
         return TelegramUser::where('user_id', $userId)->first();
     }
 
-    public function updateOrCreate($data)
+    public function updateOrCreate(array $conditions, array $data)
     {
-        return TelegramUser::updateOrCreate(
-            ['user_id' => $data['user_id']],
-            $data
-        );
+        return TelegramUser::updateOrCreate($conditions, $data);
     }
 }
