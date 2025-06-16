@@ -5,12 +5,12 @@ declare(strict_types=1);
 namespace App\Http\Controllers;
 
 use App\Models\TelegramUser;
+use App\Models\TrelloUser;
 use App\Repositories\TelegramUserRepository;
 use App\Services\TelegramService;
 use App\Services\TrelloService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Telegram\Bot\Api;
@@ -47,12 +47,16 @@ class TelegramController extends Controller
     public function handleWebhook(Request $request): void
     {
         $update = $request->all();
+
         if (isset($update['callback_query'])) {
             $this->handleCallbackQuery($update['callback_query']);
         }
 
         if (isset($update['message'])) {
             $this->handleMessage($update['message']);
+        }
+        if (isset($update['my_chat_member'])) {
+            $this->handleMyChatMember($update['my_chat_member']);
         }
     }
 
@@ -61,8 +65,25 @@ class TelegramController extends Controller
         $userId = $callbackQuery['from']['id'] ?? null;
         $chatId = $callbackQuery['message']['chat']['id'] ?? null;
         $data = $callbackQuery['data'] ?? '';
+        $callbackQueryId = $callbackQuery['id'] ?? null;
 
+        if (!$userId || !$chatId || !$callbackQueryId) {
+            Log::warning('Missing callbackQueryId/chatId/userId');
+            return;
+        }
         if ($data === 'get_report') {
+            Log::info('Received get_report callback');
+
+            try {
+                $this->telegram->answerCallbackQuery([
+                    'callback_query_id' => $callbackQueryId,
+                    'text' => 'Generating a report...',
+                    'show_alert' => false
+                ]);
+            } catch (\Exception $e) {
+                Log::error('Error answering callback query: ' . $e->getMessage());
+            }
+
             $telegramUser = $this->telegramUserRepo->findByUserId($userId);
 
             if ($telegramUser && !empty($telegramUser->id)) {
@@ -71,7 +92,6 @@ class TelegramController extends Controller
                 $this->sendAuthLink($chatId, $userId);
             }
         }
-        $this->telegramService->sendMessage($chatId, 'Fetching report...');
     }
 
     private function handleMessage(array $message): void
@@ -79,25 +99,34 @@ class TelegramController extends Controller
         $chatId = $message['chat']['id'] ?? null;
         $userId = $message['from']['id'] ?? null;
         $text = $message['text'] ?? '';
+        $firstName = $message['from']['first_name'] ?? 'Unknown';
 
-        $this->telegramUserRepo->updateOrCreate([
-            'user_id' => $userId,
-            'first_name' => $message['from']['first_name'] ?? 'Unknown',
-            'last_name' => $message['from']['last_name'] ?? 'Unknown',
-            'username' => $message['from']['username'] ?? 'Unknown'
-        ]);
+        $this->telegramUserRepo->updateOrCreate(
+            ['user_id' => $userId],
+            [
+                'first_name' => $firstName,
+                'last_name' => $message['from']['last_name'] ?? 'Unknown',
+                'username' => $message['from']['username'] ?? 'Unknown'
+            ]
+        );
 
         if ($text === '/start') {
-            $chatMember = $this->telegramService->getChatMember($chatId, $userId);
-
-            if ($chatMember->status === 'member') {
+            if ($this->isPrivateChat($message)) {
                 $telegramUser = $this->telegramUserRepo->findByUserId($userId);
-                if (!$telegramUser || empty($telegramUser->trello_id)) {
-                    $this->handleStartCommand($userId, $chatId);
+
+                if (!$telegramUser || empty($telegramUser->trelloUser) || empty($telegramUser->trelloUser->trello_token)) {
+                    $this->handleStartCommand((string)$userId, (string)$chatId);
                 } else {
-                    $this->showReport($chatId);
+                    $this->sendReportButton($chatId);
+
                 }
+
             } else {
+                $this->telegram->sendMessage([
+                    'chat_id' => $chatId,
+                    'text' => "Hello, {$firstName}! Glad to see you in our bot!",
+                    'parse_mode' => 'HTML'
+                ]);
                 $this->telegramService->sendMessage(
                     $chatId,
                     'Please start a private chat with me by clicking [here](https://t.me/' . $this->botUsername . ').',
@@ -135,7 +164,7 @@ class TelegramController extends Controller
             return response()->json(['message' => 'Trello account not linked.'], 400);
 
         } catch (\Exception $e) {
-            \Log::error('Error fetching Trello boards: ' . $e->getMessage());
+            Log::error('Error fetching Trello boards: ' . $e->getMessage());
             return response()->json(['message' => 'Error fetching Trello boards.'], 500);
         }
     }
@@ -151,7 +180,7 @@ class TelegramController extends Controller
                 return response()->json(['message' => 'Failed to fetch tasks or Trello account not linked.'], 400);
             }
         } catch (\Exception $e) {
-            \Log::error('Error fetching user tasks for Telegram user ' . $userId . ': ' . $e->getMessage());
+            Log::error('Error fetching user tasks for Telegram user ' . $userId . ': ' . $e->getMessage());
             return response()->json(['message' => 'Internal server error'], 500);
         }
     }
@@ -165,12 +194,15 @@ class TelegramController extends Controller
             return;
         }
 
-        if (empty($telegramUser->trello_id)) {
-            $this->sendSuccessMessage($chatId);
-        } else {
+        $trelloUser = TrelloUser::where('telegram_user_id', $telegramUser->id)->first();
+
+        if (!$trelloUser || empty($trelloUser->trello_id)) {
             $this->sendAuthLink($chatId, $userId);
+        } else {
+            $this->sendSuccessMessage($chatId);
         }
     }
+
 
     private function sendSuccessMessage(string $chatId): void
     {
@@ -185,7 +217,7 @@ class TelegramController extends Controller
                 ])
             ]);
         } catch (\Exception $e) {
-            \Log::error('Error sending success message: ' . $e->getMessage());
+            Log::error('Error sending success message: ' . $e->getMessage());
         }
     }
 
@@ -197,19 +229,23 @@ class TelegramController extends Controller
                 'text' => $message
             ]);
         } catch (\Exception $e) {
-            \Log::error('Error sending error message: ' . $e->getMessage());
+            Log::error('Error sending error message: ' . $e->getMessage());
         }
     }
 
-    public function generateTrelloAuthUrl(string $userId): string
+    public function generateTrelloAuthUrl(string $telegramUserId): string
     {
         $clientId = config('trello.api_key');
-        $redirectUri = route('trello.callback', ['user_id' => $userId]);
+
+        $redirectUri = route('trello.callback', ['telegram_user_id' => $telegramUserId]);
+
         $scope = 'read,write';
+
         $authUrl = "https://trello.com/1/authorize?response_type=code&key={$clientId}&redirect_uri=" . urlencode($redirectUri) . "&scope={$scope}";
 
         return $authUrl;
     }
+
 
     public function sendAuthLink(string $chatId, string $userId): void
     {
@@ -231,18 +267,18 @@ class TelegramController extends Controller
 
             return $botInfo['username'] ?? 'DefaultTestPhpBot';
         } catch (TelegramSDKException $e) {
-            \Log::error('Error fetching bot info: ' . $e->getMessage());
+            Log::error('Error fetching bot info: ' . $e->getMessage());
             return 'DefaultTestPhpBot';
         }
     }
 
     private function generatePrivateChatLink(string $userId): string
     {
-        $uniqueParam = base64_encode($userId); // Generate a unique parameter for the user
+        $uniqueParam = base64_encode($userId);
         return "https://t.me/{$this->botUsername}?start={$uniqueParam}";
     }
 
-    private function showReport(string $chatId): void
+    private function showReport(int $chatId): void
     {
         $members = TelegramUser::with('trelloUser')->get();
         $reportParts = [];
@@ -252,8 +288,11 @@ class TelegramController extends Controller
 
             if ($trelloUser && $trelloUser->trello_token) {
                 try {
-                    $tasksInProgress = $this->getTrelloTasksInProgress($trelloUser->trello_token);
-                    $reportParts[] = "{$member->first_name} {$member->last_name}: {$tasksInProgress} tasks at work";
+                    $stats = $this->getTrelloTaskStats($trelloUser->trello_token);
+
+                    $reportParts[] = "{$member->first_name} {$member->last_name}:\n" .
+                        "In Progress: {$stats['in_progress']}\n" .
+                        "Done: {$stats['done']}";
                 } catch (\Exception $e) {
                     Log::error('Error fetching Trello tasks for user ' . $member->user_id . ': ' . $e->getMessage());
                     $reportParts[] = "{$member->first_name} {$member->last_name}: error fetching tasks";
@@ -263,7 +302,7 @@ class TelegramController extends Controller
             }
         }
 
-        $report = implode("\n", $reportParts);
+        $report = implode("\n\n", $reportParts);
 
         try {
             $this->telegram->sendMessage([
@@ -271,42 +310,98 @@ class TelegramController extends Controller
                 'text' => $report
             ]);
         } catch (\Exception $e) {
-            \Log::error('Error sending report: ' . $e->getMessage());
+            Log::error('Error sending report: ' . $e->getMessage());
         }
     }
 
-    private function getTrelloTasksInProgress(string $trelloToken): string
+    private function getTrelloTaskStats(string $token): array
     {
-        $apiKey = config('trello.api_key');
-        $boardId = config('trello.id_model');
-        $cacheKey = "trello_tasks_in_progress_{$trelloToken}";
-        $cacheTTL = 300; // 5 minutes
+        $boardId = env('TRELLO_BOARD_ID');
+        $key = env('TRELLO_API_KEY');
 
-        $tasksInProgress = Cache::remember($cacheKey, $cacheTTL, function () use ($apiKey, $boardId, $trelloToken) {
-            $listsUrl = "https://api.trello.com/1/boards/{$boardId}/lists?cards=open&key={$apiKey}&token={$trelloToken}";
-            try {
-                $response = Http::get($listsUrl);
+        $cardsResponse = Http::get("https://api.trello.com/1/boards/{$boardId}/cards?key={$key}&token={$token}");
 
-                if ($response->successful()) {
-                    $lists = $response->json();
-                    $tasksInProgress = 0;
+        if (!$cardsResponse->successful()) {
+            throw new \Exception('Failed to fetch Trello cards');
+        }
 
-                    // Count the number of cards in each list
-                    foreach ($lists as $list) {
-                        $tasksInProgress += count($list['cards'] ?? []);
-                    }
+        $cards = $cardsResponse->json();
 
-                    return $tasksInProgress;
-                } else {
-                    \Log::warning('Trello API request failed with status: ' . $response->status());
-                    return 0;
-                }
-            } catch (\Exception $e) {
-                \Log::error('Error fetching Trello tasks: ' . $e->getMessage());
-                return 0;
+        $listsResponse = Http::get("https://api.trello.com/1/boards/{$boardId}/lists?key={$key}&token={$token}");
+
+        if (!$listsResponse->successful()) {
+            throw new \Exception('Failed to fetch Trello lists');
+        }
+
+        $lists = collect($listsResponse->json())
+            ->pluck('name', 'id')
+            ->map(fn($name) => strtolower($name))
+            ->toArray();
+
+        $inProgress = 0;
+        $done = 0;
+
+        foreach ($cards as $card) {
+            $listId = $card['idList'];
+            $listName = $lists[$listId] ?? 'unknown';
+
+            if ($listName === 'inprogress') {
+                $inProgress++;
+            } elseif ($listName === 'done') {
+                $done++;
             }
-        });
+        }
 
-        return $tasksInProgress;
+        return [
+            'in_progress' => $inProgress,
+            'done' => $done,
+        ];
     }
+
+
+    private function handleMyChatMember(array $myChatMemberUpdate): void
+    {
+        $chatId = $myChatMemberUpdate['chat']['id'] ?? null;
+        $newStatus = $myChatMemberUpdate['new_chat_member']['status'] ?? null;
+
+        if ($newStatus === 'member') {
+            $this->telegram->sendMessage([
+                'chat_id' => $chatId,
+                'text' => 'Hi! Click the button below to get started.',
+                'reply_markup' => json_encode([
+                    'inline_keyboard' => [
+                        [['text' => 'Start', 'callback_data' => 'start_command']]
+                    ]
+                ])
+            ]);
+        }
+    }
+
+    private function isPrivateChat(array $message): bool
+    {
+        return ($message['chat']['type'] ?? null) === 'private';
+    }
+
+    private function sendReportButton(int $chatId): void
+    {
+        try {
+            $keyboard = [
+                'inline_keyboard' => [
+                    [
+                        ['text' => 'Get report', 'callback_data' => 'get_report']
+                    ]
+                ]
+            ];
+
+            $this->telegram->sendMessage([
+                'chat_id' => $chatId,
+                'text' => 'Your Trello account has been successfully linked! You can now receive task reports.',
+                'reply_markup' => json_encode($keyboard),
+                'parse_mode' => 'HTML'
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Error sending success message: ' . $e->getMessage());
+        }
+    }
+
 }
