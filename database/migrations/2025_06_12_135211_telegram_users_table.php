@@ -9,11 +9,12 @@ return new class extends Migration {
     {
         Schema::create('telegram_users', function (Blueprint $table) {
             $table->id();
-            $table->unsignedBigInteger('user_id')->unique();
+            $table->string('user_id')->unique();
             $table->string('first_name', 64);
             $table->string('last_name', 64)->nullable();
             $table->string('username', 32)->nullable();
             $table->string('trello_id', 24)->nullable()->unique();
+
             $table->timestamps();
         });
     }
