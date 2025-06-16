@@ -14,6 +14,9 @@ class SetTelegramWebhook extends Command
     protected $description = 'Set the webhook for the Telegram bot';
     protected $telegram;
 
+    /**
+     * @throws TelegramSDKException
+     */
     public function __construct()
     {
         parent::__construct();

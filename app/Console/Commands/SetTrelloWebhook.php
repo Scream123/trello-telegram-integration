@@ -22,49 +22,67 @@ class SetTrelloWebhook extends Command
 
     public function handle()
     {
-        $this->info('Setting Trello webhook...');
+        $this->info('Checking existing webhooks...');
 
         $apiKey = config('trello.api_key');
         $token = config('trello.token');
         $boardId = config('trello.id_model');
         $webhookUrl = config('trello.webhook_url');
 
-        $url = "https://api.trello.com/1/webhooks?key={$apiKey}&token={$token}";
-
-
-        $this->info('API Key: ' . $apiKey);
-        $this->info('Token: ' . $token);
-        $this->info('Board ID: ' . $boardId);
-        $this->info('Webhook URL: ' . $webhookUrl);
-
         try {
-            $response = $this->client->post($url, [
-                'json' => [
-                    'description' => 'Test Webhook',
-                    'callbackURL' => $webhookUrl,
-                    'idModel' => $boardId,
-                    'active' => true,
-                ]
-            ]);
+            $existingWebhooks = $this->client->get(
+                "https://api.trello.com/1/tokens/{$token}/webhooks?key={$apiKey}"
+            );
+
+            $webhooks = json_decode($existingWebhooks->getBody()->getContents(), true);
+
+            if (!empty($webhooks)) {
+                $this->info('Existing ones found webhooks:');
+                foreach ($webhooks as $webhook) {
+                    $this->info("ID: {$webhook['id']}");
+                    $this->info("URL: {$webhook['callbackURL']}");
+                    $this->info("Model ID: {$webhook['idModel']}");
+                    $this->line('-------------------');
+                }
+
+                if ($this->confirm('Want to delete existing webhooks before creating a new one?')) {
+                    foreach ($webhooks as $webhook) {
+                        $this->client->delete(
+                            "https://api.trello.com/1/webhooks/{$webhook['id']}?key={$apiKey}&token={$token}"
+                        );
+                        $this->info("Webhook {$webhook['id']} removed.");
+                    }
+                } else {
+                    $this->info('The operation has been cancelled.');
+                    return;
+                }
+            }
+
+            $url = "https://api.trello.com/1/webhooks?key={$apiKey}&token={$token}";
+            $requestData = [
+                'description' => 'Test Webhook',
+                'callbackURL' => $webhookUrl,
+                'idModel' => $boardId,
+                'active' => true,
+            ];
+
+            $this->info('Creating a new one webhook...');
+            $this->info('Request URL: ' . $url);
+            $this->info('Request Data: ' . json_encode($requestData));
+
+            $response = $this->client->post($url, ['json' => $requestData]);
 
             $this->info('Response Status Code: ' . $response->getStatusCode());
-            $this->info('Response Body: ' . $response->getBody());
+            $this->info('Response Body: ' . $response->getBody()->getContents());
+            $this->info('Webhook successfully created!');
 
         } catch (RequestException $e) {
             $this->error('Error: ' . $e->getMessage());
             if ($e->hasResponse()) {
                 $response = $e->getResponse();
                 $this->error('Response Status Code: ' . $response->getStatusCode());
-                $this->error('Response Body: ' . $response->getBody());
-                $this->error('Response Headers: ' . json_encode($response->getHeaders()));
+                $this->error('Response Body: ' . $response->getBody()->getContents());
             }
         }
-        $this->info('Request URL: ' . $url);
-        $this->info('Request Data: ' . json_encode([
-                'description' => 'Test Webhook',
-                'callbackURL' => $webhookUrl,
-                'idModel' => $boardId,
-                'active' => true,
-            ]));
     }
 }
