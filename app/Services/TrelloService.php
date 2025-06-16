@@ -22,7 +22,7 @@ class TrelloService
         $this->apiKey = config('trello.api_key');
     }
 
-    public function getUserBoards(string $userId)
+    public function getUserBoards(string $userId): array
     {
         // Check if the user has a Trello link
         $user = $this->getUserWithTrelloToken($userId);
@@ -56,7 +56,7 @@ class TrelloService
         return json_decode($response->getBody()->getContents(), true);
     }
 
-    public function getUserTasks(string $userId)
+    public function getUserTasks(string $userId): array
     {
         // Cache the request to the Trello API for 5 minutes
         return Cache::remember("trello_tasks_{$userId}", 300, function () use ($userId) {
@@ -71,7 +71,7 @@ class TrelloService
                     'query' => [
                         'key' => config('trello.api_key'),
                         'token' => $user->trello_token,
-                        'filter' => 'open' // Открытые задачи
+                        'filter' => 'open'
                     ]
                 ]);
 
